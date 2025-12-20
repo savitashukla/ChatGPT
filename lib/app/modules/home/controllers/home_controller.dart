@@ -1,7 +1,5 @@
 import 'dart:async';
 
-import 'package:chat_gpt/app/data/app_constants.dart';
-import 'package:chat_gpt/app/models/answer_model.dart';
 import 'package:chat_gpt/app/widgets/chat_message.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -12,6 +10,11 @@ import 'package:permission_handler/permission_handler.dart';
 // RAG Service imports with correct paths
 import '../../../data/rag_service.dart';
 import '../../../data/document_processing_service.dart';
+
+// New imports for offline ML functionality
+import '../../../../services/offline_ml_service.dart';
+import '../../../../services/connection_service.dart';
+import '../../../../services/tflite_model_manager.dart';
 
 
 class HomeController extends GetxController {
@@ -33,11 +36,22 @@ class HomeController extends GetxController {
   RxBool isRAGEnabled = false.obs;
   RxInt documentsCount = 0.obs;
 
+  // Offline ML Service
+  final OfflineMLService _offlineMLService = OfflineMLService();
+  RxBool isOfflineMLModelLoaded = false.obs;
+
+  // Connection Service
+  final ConnectionService connectionService = ConnectionService();
+
+  // TensorFlow Lite Model Manager
+  final TFLiteModelManager _tfliteModelManager = TFLiteModelManager();
+
   @override
   void onInit() {
     //getGeminiModels();
     initSpeechState();
     checkKnowledgeBase();
+    _loadOfflineMLModel();
     super.onInit();
   }
 
@@ -203,20 +217,31 @@ class HomeController extends GetxController {
 
   Dio dio = Dio();
 
-  /// this method is used to get response from Gemini api
+  /// this method is used to get response from Gemini api or offline ML
 
   void apiCall({required String msg}) async {
     try {
       isTyping.value = true;
       String response;
 
-      // Check if RAG is enabled and knowledge base exists
-      if (isRAGEnabled.value && await _ragService.hasKnowledgeBase()) {
-        // Use RAG for enhanced responses
-        response = await _ragService.ragQuery(msg);
+      // Check connection status and mode preference
+      bool isOnline = connectionService.isOnlineMode && connectionService.isConnected;
+
+      if (isOnline) {
+        // Online mode - use existing online functionality
+        if (isRAGEnabled.value && await _ragService.hasKnowledgeBase()) {
+          // Use RAG for enhanced responses
+          response = await _ragService.ragQuery(msg);
+        } else {
+          // Fallback to normal Gemini API
+          response = await _normalGeminiCall(msg);
+        }
       } else {
-        // Fallback to normal Gemini API
-        response = await _normalGeminiCall(msg);
+        // Offline mode - use on-device ML
+        response = await _offlineMLService.generateResponse(msg);
+
+        // Add offline indicator to response
+        response = "📱 **Offline Mode**\n\n$response\n\n_Generated using on-device AI without internet connection._";
       }
 
       insertNewData(response);
@@ -224,7 +249,18 @@ class HomeController extends GetxController {
     } catch (e) {
       print('Error in API call: $e');
       isTyping.value = false;
-      insertNewData("Error: Unable to get response");
+
+      // If online call failed, try offline as fallback
+      if (connectionService.isConnected) {
+        try {
+          String fallbackResponse = await _offlineMLService.generateResponse(msg);
+          insertNewData("🔄 **Fallback to Offline Mode**\n\n$fallbackResponse\n\n_Online service unavailable, using on-device AI._");
+        } catch (offlineError) {
+          insertNewData("❌ Error: Unable to get response from both online and offline services.");
+        }
+      } else {
+        insertNewData("❌ Error: No internet connection and offline service unavailable.");
+      }
     }
   }
 
@@ -243,12 +279,13 @@ class HomeController extends GetxController {
     };
 
     var response = await dio.post(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=AIzaSyD1eKN8QyDlPxduNzhlQMzsZFIKUG_1ZOw",
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=ApiKey",
       data: data,
     );
 
     if (response.statusCode == 200) {
       final responseData = response.data;
+      print("call responseData here ${responseData}");
       final candidates = responseData['candidates'] as List?;
 
       if (candidates != null && candidates.isNotEmpty) {
@@ -437,6 +474,275 @@ class HomeController extends GetxController {
             const SizedBox(height: 16),
             Text('RAG Status: ${isRAGEnabled.value ? "Enabled" : "Disabled"}'),
           ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Get.back(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Load offline ML model
+  Future<void> _loadOfflineMLModel() async {
+    try {
+      bool success = await _offlineMLService.initializeModel();
+      isOfflineMLModelLoaded.value = success;
+
+      if (success) {
+        // Add welcome message about offline capability
+        ChatMessage welcomeMessage = ChatMessage(
+          text: "🤖 **Offline AI Ready!**\n\nI can now work both online and offline:\n\n"
+               "🌐 **Online Mode**: Full ChatGPT capabilities with RAG\n"
+               "📱 **Offline Mode**: On-device AI for basic assistance\n\n"
+               "I'll automatically switch modes based on your internet connection!",
+          sender: "bot",
+        );
+        messages.insert(0, welcomeMessage);
+      }
+    } catch (e) {
+      print('Error loading offline ML model: $e');
+      isOfflineMLModelLoaded.value = false;
+    }
+  }
+
+  /// Toggle between online and offline modes manually
+  void toggleConnectionMode() {
+    connectionService.toggleMode();
+
+    String mode = connectionService.isOnlineMode ? "Online" : "Offline";
+    String emoji = connectionService.isOnlineMode ? "🌐" : "📱";
+
+    ChatMessage modeMessage = ChatMessage(
+      text: "$emoji **Switched to $mode Mode**\n\n"
+           "${connectionService.isOnlineMode
+             ? 'Using cloud-based AI with full capabilities.'
+             : 'Using on-device AI for privacy and offline access.'}",
+      sender: "bot",
+    );
+    messages.insert(0, modeMessage);
+  }
+
+  /// Get current mode status
+  String getCurrentModeStatus() {
+    if (!connectionService.isConnected) {
+      return "📴 Offline (No Internet)";
+    } else if (connectionService.isOnlineMode) {
+      return "🌐 Online Mode";
+    } else {
+      return "📱 Offline Mode (By Choice)";
+    }
+  }
+
+  /// Get offline ML model status
+  Map<String, dynamic> getOfflineModelStatus() {
+    return _offlineMLService.getModelStatus();
+  }
+
+  /// Show model status dialog
+  void showModelStatus() {
+    final modelStatus = getOfflineModelStatus();
+    final connectionInfo = connectionService.getConnectionInfo();
+
+    Get.dialog(
+      AlertDialog(
+        title: const Text('AI Model Status'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Connection Status
+              Text('📡 Connection Status',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              const SizedBox(height: 8),
+              Text('• Internet: ${connectionInfo['isConnected'] ? '✅ Connected' : '❌ Disconnected'}'),
+              Text('• Connection Type: ${connectionInfo['connectionType']}'),
+              Text('• Current Mode: ${connectionInfo['isOnlineMode'] ? '🌐 Online' : '📱 Offline'}'),
+
+              const SizedBox(height: 16),
+
+              // Offline ML Model Status
+              Text('🤖 Offline AI Model',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              const SizedBox(height: 8),
+              Text('• Model Loaded: ${modelStatus['isLoaded'] ? '✅ Yes' : '❌ No'}'),
+              Text('• Mode: ${modelStatus['mode']}'),
+
+              const SizedBox(height: 16),
+
+              // RAG Status
+              Text('🧠 RAG System',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              const SizedBox(height: 8),
+              Text('• RAG Enabled: ${isRAGEnabled.value ? '✅ Yes' : '❌ No'}'),
+              Text('• Documents: ${documentsCount.value}'),
+
+              const SizedBox(height: 16),
+
+              // Capabilities
+              Text('💡 Current Capabilities',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              const SizedBox(height: 8),
+              if (connectionInfo['isOnlineMode'] && connectionInfo['isConnected'])
+                Text('• 🌐 Full online AI with ChatGPT/Gemini')
+              else
+                Text('• 📱 On-device AI for basic assistance'),
+              if (isRAGEnabled.value && documentsCount.value > 0)
+                Text('• 🧠 Document-based question answering'),
+              Text('• 🎤 Voice input and speech recognition'),
+              Text('• 💾 Local knowledge base storage'),
+              Text('• 🔢 Mathematical calculations'),
+              Text('• 📅 Date and time information'),
+            ],
+          ),
+        ),
+        actions: [
+          if (!connectionInfo['isConnected'])
+            TextButton(
+              onPressed: () {
+                Get.back();
+                toggleConnectionMode();
+              },
+              child: const Text('Retry Connection'),
+            ),
+          TextButton(
+            onPressed: () => Get.back(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Show TensorFlow Lite Models management dialog
+  Future<void> showTFLiteModelsDialog() async {
+    // Get downloaded models list
+    List<String> downloadedModels = await TFLiteModelManager.getDownloadedModels();
+
+    Get.dialog(
+      AlertDialog(
+        title: const Text('TensorFlow Lite Models'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 400,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Manage offline AI models for enhanced performance',
+                style: TextStyle(fontSize: 14, color: Colors.grey),
+              ),
+              const SizedBox(height: 16),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: TFLiteModelManager.availableModels.length,
+                  itemBuilder: (context, index) {
+                    final modelKey = TFLiteModelManager.availableModels.keys.elementAt(index);
+                    final modelInfo = TFLiteModelManager.availableModels[modelKey]!;
+                    final isDownloaded = downloadedModels.contains(modelKey);
+
+                    return Card(
+                      child: ListTile(
+                        leading: Icon(
+                          isDownloaded ? Icons.check_circle : Icons.download,
+                          color: isDownloaded ? Colors.green : Colors.blue,
+                        ),
+                        title: Text(modelInfo.name),
+                        subtitle: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(modelInfo.description),
+                            const SizedBox(height: 4),
+                            Text(
+                              'Size: ${modelInfo.size}',
+                              style: const TextStyle(fontSize: 12, color: Colors.grey),
+                            ),
+                          ],
+                        ),
+                        trailing: isDownloaded
+                            ? IconButton(
+                                icon: const Icon(Icons.delete, color: Colors.red),
+                                onPressed: () async {
+                                  bool success = await TFLiteModelManager.deleteModel(modelKey);
+                                  if (success) {
+                                    Get.back();
+                                    showTFLiteModelsDialog(); // Refresh dialog
+                                    Get.snackbar(
+                                      'Success',
+                                      'Model deleted successfully',
+                                      backgroundColor: Colors.orange,
+                                      colorText: Colors.white,
+                                    );
+                                  }
+                                },
+                              )
+                            : IconButton(
+                                icon: const Icon(Icons.download, color: Colors.blue),
+                                onPressed: () async {
+                                  Get.back(); // Close current dialog
+
+                                  // Show download progress dialog
+                                  RxDouble downloadProgress = 0.0.obs;
+
+                                  Get.dialog(
+                                    AlertDialog(
+                                      title: Text('Downloading ${modelInfo.name}'),
+                                      content: Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Text('Please wait while the model is being downloaded...'),
+                                          const SizedBox(height: 16),
+                                          Obx(() => LinearProgressIndicator(
+                                            value: downloadProgress.value,
+                                          )),
+                                          const SizedBox(height: 8),
+                                          Obx(() => Text(
+                                            '${(downloadProgress.value * 100).toStringAsFixed(1)}%',
+                                          )),
+                                        ],
+                                      ),
+                                    ),
+                                    barrierDismissible: false,
+                                  );
+
+                                  // Download the model
+                                  bool success = await TFLiteModelManager.downloadModel(
+                                    modelKey,
+                                    onProgress: (progress) {
+                                      downloadProgress.value = progress;
+                                    },
+                                  );
+
+                                  Get.back(); // Close progress dialog
+
+                                  if (success) {
+                                    Get.snackbar(
+                                      'Success',
+                                      'Model downloaded successfully!',
+                                      backgroundColor: Colors.green,
+                                      colorText: Colors.white,
+                                    );
+                                  } else {
+                                    Get.snackbar(
+                                      'Error',
+                                      'Failed to download model',
+                                      backgroundColor: Colors.red,
+                                      colorText: Colors.white,
+                                    );
+                                  }
+                                },
+                              ),
+                        isThreeLine: true,
+                      ),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
         ),
         actions: [
           TextButton(

@@ -6,7 +6,7 @@ import 'vector_database_service.dart';
 class RAGService {
   final EmbeddingService _embeddingService = EmbeddingService();
   final Dio _dio = Dio();
-  final String _apiKey = 'AIzaSyD1eKN8QyDlPxduNzhlQMzsZFIKUG_1ZOw';
+  final String _apiKey = '_apiKey';
 
   /// Perform RAG: Retrieve relevant context and generate response
   Future<String> ragQuery(String userQuery) async {

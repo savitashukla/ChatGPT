@@ -13,6 +13,41 @@ class HomeView extends GetView<HomeController> {
         appBar: AppBar(
           title: const Text("ChatGPT with RAG"),
           actions: [
+            // Connection Status Indicator
+            Obx(() => Padding(
+              padding: const EdgeInsets.only(right: 8.0),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: controller.connectionService.isConnected
+                    ? (controller.connectionService.isOnlineMode ? Colors.green : Colors.blue)
+                    : Colors.red,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      controller.connectionService.isConnected
+                        ? (controller.connectionService.isOnlineMode ? Icons.cloud : Icons.offline_bolt)
+                        : Icons.cloud_off,
+                      color: Colors.white,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 4),
+                    Text(
+                      controller.getCurrentModeStatus().split(' ')[1], // Get just the mode part
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )),
+
             // RAG Status Indicator
             Obx(() => Padding(
               padding: const EdgeInsets.only(right: 8.0),
@@ -35,7 +70,7 @@ class HomeView extends GetView<HomeController> {
                       controller.isRAGEnabled.value ? 'RAG ON' : 'RAG OFF',
                       style: const TextStyle(
                         color: Colors.white,
-                        fontSize: 12,
+                        fontSize: 10,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -56,6 +91,15 @@ class HomeView extends GetView<HomeController> {
                     break;
                   case 'toggle_rag':
                     controller.toggleRAG();
+                    break;
+                  case 'toggle_mode':
+                    controller.toggleConnectionMode();
+                    break;
+                  case 'model_status':
+                    controller.showModelStatus();
+                    break;
+                  case 'download_models':
+                    controller.showTFLiteModelsDialog();
                     break;
                   case 'stats':
                     controller.showKnowledgeBaseStats();
@@ -91,12 +135,42 @@ class HomeView extends GetView<HomeController> {
                     subtitle: Text('Toggle smart responses'),
                   )),
                 ),
+                PopupMenuItem<String>(
+                  value: 'toggle_mode',
+                  child: Obx(() => ListTile(
+                    leading: Icon(
+                      controller.connectionService.isOnlineMode ? Icons.offline_bolt : Icons.cloud,
+                      color: controller.connectionService.isConnected
+                        ? Colors.blue
+                        : Colors.grey,
+                    ),
+                    title: Text('Switch to ${controller.connectionService.isOnlineMode ? 'Offline' : 'Online'} Mode'),
+                    subtitle: Text('Toggle connection mode'),
+                  )),
+                ),
+                const PopupMenuItem<String>(
+                  value: 'model_status',
+                  child: ListTile(
+                    leading: Icon(Icons.info),
+                    title: Text('Model Status'),
+                    subtitle: Text('View AI model info'),
+                  ),
+                ),
                 const PopupMenuItem<String>(
                   value: 'stats',
                   child: ListTile(
                     leading: Icon(Icons.info_outline),
                     title: Text('Knowledge Stats'),
                     subtitle: Text('View database info'),
+                  ),
+                ),
+                const PopupMenuDivider(),
+                const PopupMenuItem<String>(
+                  value: 'download_models',
+                  child: ListTile(
+                    leading:     Icon(Icons.download),
+                    title: Text('Download TFLite Models'),
+                    subtitle: Text('Manage TensorFlow Lite models'),
                   ),
                 ),
               ],
@@ -111,7 +185,7 @@ class HomeView extends GetView<HomeController> {
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.all(8),
-                  color: Colors.blue.withOpacity(0.1),
+                  color: Colors.blue.withValues(alpha: 0.1),
                   child: Obx(() => Row(
                     children: [
                       const Icon(Icons.storage, size: 16, color: Colors.blue),
