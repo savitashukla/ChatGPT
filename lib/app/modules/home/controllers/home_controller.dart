@@ -10,11 +10,16 @@ import 'package:permission_handler/permission_handler.dart';
 // RAG Service imports with correct paths
 import '../../../data/rag_service.dart';
 import '../../../data/document_processing_service.dart';
+import '../../../data/app_constants.dart'; // Import for secure API keys
 
-// New imports for offline ML functionality
 import '../../../../services/offline_ml_service.dart';
 import '../../../../services/connection_service.dart';
 import '../../../../services/tflite_model_manager.dart';
+import '../../../models/chat_history_model.dart';
+import '../../../services/chat_history_service.dart';
+
+// Chat History imports
+
 
 
 class HomeController extends GetxController {
@@ -48,11 +53,12 @@ class HomeController extends GetxController {
 
   @override
   void onInit() {
+    super.onInit();
     //getGeminiModels();
     initSpeechState();
     checkKnowledgeBase();
     _loadOfflineMLModel();
-    super.onInit();
+    _showNewYearGreeting();
   }
 
   @override
@@ -66,8 +72,13 @@ class HomeController extends GetxController {
     ChatMessage message = ChatMessage(
       text: textController.text,
       sender: "user",
+      timestamp: DateTime.now(),
     );
     messages.insert(0, message);
+
+    // Save user message to history
+    _saveMessageToHistory(textController.text.trim(), "user");
+
     isTyping.value = true;
     apiCall(msg: textController.text.trim());
     textController.clear();
@@ -77,10 +88,14 @@ class HomeController extends GetxController {
     ChatMessage botMessage = ChatMessage(
       text: response,
       sender: "bot",
+      timestamp: DateTime.now(),
     );
 
     isTyping.value = false;
     messages.insert(0, botMessage);
+
+    // Save bot response to history
+    _saveMessageToHistory(response, "bot");
   }
 
   /// Initialize speech recognition
@@ -266,6 +281,11 @@ class HomeController extends GetxController {
 
   /// Normal Gemini API call (fallback)
   Future<String> _normalGeminiCall(String msg) async {
+    // Validate API key first
+    if (!AppConstants.isGeminiKeyValid) {
+      throw Exception('Gemini API key is missing. Please provide GEMINI_API_KEY via --dart-define');
+    }
+
     dio.options.headers['content-Type'] = 'application/json';
 
     Map<String, dynamic> data = {
@@ -278,23 +298,51 @@ class HomeController extends GetxController {
       ]
     };
 
+    final url = "${AppConstants.geminiBaseUrl}/models/${AppConstants.geminiModel}:generateContent?key=${AppConstants.geminiApiKey}";
+
     var response = await dio.post(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=ApiKey",
+      url,
       data: data,
+      options: Options(
+        sendTimeout: const Duration(seconds: 20),
+        receiveTimeout: const Duration(seconds: 30),
+        // Allow reading response bodies for 4xx errors
+        validateStatus: (status) => status != null && status < 500,
+      ),
     );
 
-    if (response.statusCode == 200) {
-      final responseData = response.data;
-      print("call responseData here ${responseData}");
-      final candidates = responseData['candidates'] as List?;
-
-      if (candidates != null && candidates.isNotEmpty) {
-        final content = candidates[0]['content'];
-        final parts = content['parts'] as List;
-        return parts[0]['text'] ?? 'No response generated';
-      }
+    // Handle common permission errors explicitly
+    if (response.statusCode == 403) {
+      final err = response.data is Map ? (response.data['error'] ?? {}) : {};
+      final status = err['status'] ?? 'PERMISSION_DENIED';
+      final message = err['message'] ?? 'Forbidden';
+      throw Exception(
+        '403 $status: $message. Check API key validity, billing, API enablement, key restrictions, and model access.'
+      );
     }
-    throw Exception('Failed to get response from Gemini');
+
+    if (response.statusCode == 401) {
+      throw Exception('401 UNAUTHENTICATED: Invalid API key.');
+    }
+
+    if (response.statusCode != 200) {
+      final err = response.data is Map ? (response.data['error'] ?? {}) : {};
+      final status = err['status'] ?? response.statusCode.toString();
+      final message = err['message'] ?? 'Unexpected error';
+      throw Exception('$status: $message');
+    }
+
+    final responseData = response.data;
+    print("call responseData here ${responseData}");
+    final candidates = responseData['candidates'] as List?;
+
+    if (candidates != null && candidates.isNotEmpty) {
+      final content = candidates[0]['content'];
+      final parts = content['parts'] as List;
+      return parts[0]['text'] ?? 'No response generated';
+    }
+
+    throw Exception('No response generated from Gemini');
   }
 
   /// Check if knowledge base exists and update RAG status
@@ -406,13 +454,19 @@ class HomeController extends GetxController {
         ),
         actions: [
           TextButton(
-            onPressed: () => Get.back(),
+            onPressed: () {
+              titleController.dispose();
+              contentController.dispose();
+              Get.back(closeOverlays: false);
+            },
             child: const Text('Cancel'),
           ),
           ElevatedButton(
             onPressed: () async {
               if (titleController.text.isNotEmpty && contentController.text.isNotEmpty) {
-                Get.back();
+                Get.back(closeOverlays: false);
+                titleController.dispose();
+                contentController.dispose();
 
                 isTyping.value = true;
                 bool success = await _docService.addTextKnowledge(
@@ -435,14 +489,29 @@ class HomeController extends GetxController {
                     sender: "bot",
                   );
                   messages.insert(0, systemMessage);
+                } else {
+                  Get.snackbar(
+                    'Error',
+                    'Failed to add knowledge. Please try again.',
+                    backgroundColor: Colors.red,
+                    colorText: Colors.white,
+                  );
                 }
                 isTyping.value = false;
+              } else {
+                Get.snackbar(
+                  'Validation Error',
+                  'Please fill in both title and content fields.',
+                  backgroundColor: Colors.orange,
+                  colorText: Colors.white,
+                );
               }
             },
             child: const Text('Add'),
           ),
         ],
       ),
+      barrierDismissible: true,
     );
   }
 
@@ -477,11 +546,12 @@ class HomeController extends GetxController {
         ),
         actions: [
           TextButton(
-            onPressed: () => Get.back(),
+            onPressed: () => Get.back(closeOverlays: false),
             child: const Text('Close'),
           ),
         ],
       ),
+      barrierDismissible: true,
     );
   }
 
@@ -495,7 +565,7 @@ class HomeController extends GetxController {
         // Add welcome message about offline capability
         ChatMessage welcomeMessage = ChatMessage(
           text: "🤖 **Offline AI Ready!**\n\nI can now work both online and offline:\n\n"
-               "🌐 **Online Mode**: Full ChatGPT capabilities with RAG\n"
+               "🌐 **Online Mode**: Full HelpAI capabilities with RAG\n"
                "📱 **Offline Mode**: On-device AI for basic assistance\n\n"
                "I'll automatically switch modes based on your internet connection!",
           sender: "bot",
@@ -587,7 +657,7 @@ class HomeController extends GetxController {
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
               const SizedBox(height: 8),
               if (connectionInfo['isOnlineMode'] && connectionInfo['isConnected'])
-                Text('• 🌐 Full online AI with ChatGPT/Gemini')
+                Text('• 🌐 Full online AI with HelpAI/Gemini')
               else
                 Text('• 📱 On-device AI for basic assistance'),
               if (isRAGEnabled.value && documentsCount.value > 0)
@@ -603,17 +673,18 @@ class HomeController extends GetxController {
           if (!connectionInfo['isConnected'])
             TextButton(
               onPressed: () {
-                Get.back();
+                Get.back(closeOverlays: false);
                 toggleConnectionMode();
               },
               child: const Text('Retry Connection'),
             ),
           TextButton(
-            onPressed: () => Get.back(),
+            onPressed: () => Get.back(closeOverlays: false),
             child: const Text('Close'),
           ),
         ],
       ),
+      barrierDismissible: true,
     );
   }
 
@@ -666,17 +737,49 @@ class HomeController extends GetxController {
                             ? IconButton(
                                 icon: const Icon(Icons.delete, color: Colors.red),
                                 onPressed: () async {
-                                  bool success = await TFLiteModelManager.deleteModel(modelKey);
-                                  if (success) {
-                                    Get.back();
-                                    showTFLiteModelsDialog(); // Refresh dialog
-                                    Get.snackbar(
-                                      'Success',
-                                      'Model deleted successfully',
-                                      backgroundColor: Colors.orange,
-                                      colorText: Colors.white,
-                                    );
-                                  }
+                                  // Show confirmation dialog before deletion
+                                  Get.dialog(
+                                    AlertDialog(
+                                      title: const Text('Delete Model'),
+                                      content: Text('Are you sure you want to delete ${modelInfo.name}?'),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () => Get.back(),
+                                          child: const Text('Cancel'),
+                                        ),
+                                        ElevatedButton(
+                                          onPressed: () async {
+                                            Get.back(); // Close confirmation dialog
+                                            Get.back(); // Close models dialog
+
+                                            bool success = await TFLiteModelManager.deleteModel(modelKey);
+                                            if (success) {
+                                              Get.snackbar(
+                                                'Success',
+                                                'Model deleted successfully',
+                                                backgroundColor: Colors.orange,
+                                                colorText: Colors.white,
+                                              );
+                                              // Refresh the models dialog
+                                              showTFLiteModelsDialog();
+                                            } else {
+                                              Get.snackbar(
+                                                'Error',
+                                                'Failed to delete model',
+                                                backgroundColor: Colors.red,
+                                                colorText: Colors.white,
+                                              );
+                                            }
+                                          },
+                                          style: ElevatedButton.styleFrom(
+                                            backgroundColor: Colors.red,
+                                            foregroundColor: Colors.white,
+                                          ),
+                                          child: const Text('Delete'),
+                                        ),
+                                      ],
+                                    ),
+                                  );
                                 },
                               )
                             : IconButton(
@@ -704,34 +807,59 @@ class HomeController extends GetxController {
                                           )),
                                         ],
                                       ),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () {
+                                            Get.back(); // Close progress dialog
+                                            showTFLiteModelsDialog(); // Reopen models dialog
+                                          },
+                                          child: const Text('Cancel'),
+                                        ),
+                                      ],
                                     ),
                                     barrierDismissible: false,
                                   );
 
-                                  // Download the model
-                                  bool success = await TFLiteModelManager.downloadModel(
-                                    modelKey,
-                                    onProgress: (progress) {
-                                      downloadProgress.value = progress;
-                                    },
-                                  );
-
-                                  Get.back(); // Close progress dialog
-
-                                  if (success) {
-                                    Get.snackbar(
-                                      'Success',
-                                      'Model downloaded successfully!',
-                                      backgroundColor: Colors.green,
-                                      colorText: Colors.white,
+                                  try {
+                                    // Download the model
+                                    bool success = await TFLiteModelManager.downloadModel(
+                                      modelKey,
+                                      onProgress: (progress) {
+                                        downloadProgress.value = progress;
+                                      },
                                     );
-                                  } else {
+
+                                    Get.back(); // Close progress dialog
+
+                                    if (success) {
+                                      Get.snackbar(
+                                        'Success',
+                                        'Model downloaded successfully!',
+                                        backgroundColor: Colors.green,
+                                        colorText: Colors.white,
+                                      );
+                                      // Refresh the models dialog
+                                      showTFLiteModelsDialog();
+                                    } else {
+                                      Get.snackbar(
+                                        'Error',
+                                        'Failed to download model',
+                                        backgroundColor: Colors.red,
+                                        colorText: Colors.white,
+                                      );
+                                      // Reopen models dialog on error
+                                      showTFLiteModelsDialog();
+                                    }
+                                  } catch (e) {
+                                    Get.back(); // Close progress dialog on exception
                                     Get.snackbar(
                                       'Error',
-                                      'Failed to download model',
+                                      'Download failed: $e',
                                       backgroundColor: Colors.red,
                                       colorText: Colors.white,
                                     );
+                                    // Reopen models dialog on error
+                                    showTFLiteModelsDialog();
                                   }
                                 },
                               ),
@@ -751,6 +879,58 @@ class HomeController extends GetxController {
           ),
         ],
       ),
+      barrierDismissible: true,
     );
+  }
+
+  /// Save message to chat history
+  Future<void> _saveMessageToHistory(String text, String sender) async {
+    try {
+      final sessionId = await ChatHistoryService.getCurrentSessionId();
+      final historyMessage = ChatHistoryMessage(
+        text: text,
+        sender: sender,
+        timestamp: DateTime.now(),
+        sessionId: sessionId,
+      );
+      await ChatHistoryService.saveChatMessage(historyMessage);
+    } catch (e) {
+      print('Error saving message to history: $e');
+    }
+  }
+
+  /// Clear current chat and start new session
+  Future<void> clearCurrentChat() async {
+    messages.clear();
+    await ChatHistoryService.startNewSession();
+    Get.showSnackbar(
+      GetSnackBar(
+        title: "New Chat",
+        message: "Started a new conversation",
+        backgroundColor: Colors.blue,
+        snackPosition: SnackPosition.TOP,
+        margin: const EdgeInsets.all(16),
+        borderRadius: 8,
+        duration: const Duration(seconds: 2),
+      ),
+    );
+  }
+
+  /// Show Happy New Year greeting when app opens
+  void _showNewYearGreeting() {
+    // Add a beautiful New Year message
+    ChatMessage newYearMessage = ChatMessage(
+      text: "🎉🎊 **HAPPY NEW YEAR 2026!** 🎊🎉\n\n"
+           "✨ Wishing you a year filled with:\n"
+           "💫 Success and prosperity\n"
+           "🌟 Health and wellness\n"
+           "🚀 Amazing achievements\n\n"
+           "🎆 May this year bring you joy, peace, and countless blessings!\n\n"
+           "🎁 Thank you for using HelpAI. Let's make 2026 extraordinary together!\n\n"
+           "🥳 Cheers to new beginnings! 🥂",
+      sender: "bot",
+      timestamp: DateTime.now(),
+    );
+    messages.insert(0, newYearMessage);
   }
 }

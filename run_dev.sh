@@ -1,0 +1,53 @@
+#!/bin/bash
+
+# Flutter Development Runner with Environment Variables
+# This script loads API keys from .env.local and runs the Flutter app securely
+
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+echo -e "${GREEN}🚀 Starting Flutter app with secure environment variables...${NC}"
+
+# Check if .env.local exists
+if [ ! -f ".env.local" ]; then
+    echo -e "${RED}❌ Error: .env.local file not found${NC}"
+    echo -e "${YELLOW}📝 Please create .env.local file with your API keys:${NC}"
+    echo "   cp .env.example .env.local"
+    echo "   # Then edit .env.local with your actual API keys"
+    exit 1
+fi
+
+# Load environment variables from .env.local
+echo -e "${YELLOW}📋 Loading environment variables from .env.local...${NC}"
+export $(cat .env.local | grep -v '^#' | xargs)
+
+# Validate that required keys are set
+if [ -z "$OPENAI_API_KEY" ] || [ "$OPENAI_API_KEY" = "your_openai_api_key_here" ]; then
+    echo -e "${RED}❌ OPENAI_API_KEY is not set or still has placeholder value${NC}"
+    echo "Please set your actual OpenAI API key in .env.local"
+fi
+
+if [ -z "$GEMINI_API_KEY" ] || [ "$GEMINI_API_KEY" = "your_gemini_api_key_here" ]; then
+    echo -e "${RED}❌ GEMINI_API_KEY is not set or still has placeholder value${NC}"
+    echo "Please set your actual Gemini API key in .env.local"
+fi
+
+# Check if we have at least one valid API key
+if ([ -z "$OPENAI_API_KEY" ] || [ "$OPENAI_API_KEY" = "your_openai_api_key_here" ]) && ([ -z "$GEMINI_API_KEY" ] || [ "$GEMINI_API_KEY" = "your_gemini_api_key_here" ]); then
+    echo -e "${RED}❌ No valid API keys found. Please configure your keys in .env.local${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ API keys loaded successfully${NC}"
+
+# Run Flutter with dart-define parameters
+echo -e "${YELLOW}🔧 Running Flutter app...${NC}"
+flutter run \
+    --dart-define=OPENAI_API_KEY="$OPENAI_API_KEY" \
+    --dart-define=GEMINI_API_KEY="$GEMINI_API_KEY" \
+    "$@"

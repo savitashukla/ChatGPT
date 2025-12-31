@@ -3,7 +3,7 @@ import 'package:dio/dio.dart';
 
 class EmbeddingService {
   final Dio _dio = Dio();
-  final String _apiKey = 'apikey'; // Your Gemini API key
+  final String _apiKey = 'AIzaSyBFbWsr1AK4TAelWGSAqCKsXFctJqN2lpA'; // Your Gemini API key
 
   /// Generate text embedding using Gemini's text-embedding-004 model
   Future<List<double>> generateEmbedding(String text) async {

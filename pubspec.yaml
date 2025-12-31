@@ -49,11 +49,13 @@ dependencies:
   syncfusion_flutter_pdf: ^21.2.10
   crypto: ^3.0.3
   http: ^1.1.0
-  shared_preferences: ^2.2.2
+  connectivity_plus: ^4.0.1
 
-  # On-device ML and connectivity
-  path_provider: ^2.1.1
-  connectivity_plus: ^5.0.2
+  # Chat History & Storage
+  shared_preferences: ^2.2.2
+  uuid: ^4.1.0
+  intl: ^0.18.1
+  sqflite: ^2.3.0
 
 dev_dependencies:
   flutter_test:

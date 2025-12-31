@@ -138,14 +138,14 @@ class ConnectionService extends GetxService {
         actions: [
           TextButton(
             onPressed: () {
-              Get.back();
+              Get.back(closeOverlays: false);
               // Stay in offline mode
             },
             child: const Text('Stay Offline'),
           ),
           ElevatedButton(
             onPressed: () {
-              Get.back();
+              Get.back(closeOverlays: false);
               switchToOnlineMode();
             },
             child: const Text('Go Online'),
