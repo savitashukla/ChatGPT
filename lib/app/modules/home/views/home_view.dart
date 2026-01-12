@@ -497,6 +497,21 @@ class HomeView extends GetView<HomeController> {
                       controller.toggleConnectionMode();
                     },
                   ),
+                  // Debug option: Force online mode
+                  Obx(() => !controller.connectionService.isConnected
+                      ? _buildDrawerTile(
+                          icon: Icons.bug_report,
+                          title: 'Force Online Mode',
+                          subtitle: const Text(
+                            '⚠️ Debug: Bypass connection check',
+                            style: TextStyle(fontSize: 11, color: Colors.orange),
+                          ),
+                          onTap: () {
+                            Get.back();
+                            controller.connectionService.forceOnlineMode();
+                          },
+                        )
+                      : const SizedBox.shrink()),
                   _buildDrawerTile(
                     icon: Icons.info_outline,
                     title: 'Model Status',

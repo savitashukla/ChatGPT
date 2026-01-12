@@ -1,16 +1,19 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
+import 'package:http/http.dart' as http;
 
 class ConnectionService extends GetxService {
   final Connectivity _connectivity = Connectivity();
   StreamSubscription<ConnectivityResult>? _connectivitySubscription;
 
-  final RxBool _isConnected = true.obs;
+  final RxBool _isConnected = true.obs; // Start optimistic
   final RxString _connectionType = 'unknown'.obs;
-  final RxBool _isOnlineMode = true.obs;
+  final RxBool _isOnlineMode = true.obs; // Start in online mode
+  bool _isShowingDialog = false; // Add this flag
 
   // Getters
   bool get isConnected => _isConnected.value;
@@ -21,6 +24,12 @@ class ConnectionService extends GetxService {
   @override
   void onInit() {
     super.onInit();
+    // On web, start with optimistic connectivity
+    if (kIsWeb) {
+      print('🌐 Running on web - starting in online mode');
+      _isConnected.value = true;
+      _isOnlineMode.value = true;
+    }
     _initConnectivity();
     _setupConnectivityListener();
   }
@@ -93,16 +102,57 @@ class ConnectionService extends GetxService {
   /// Verify actual internet access by attempting to connect to a reliable service
   Future<void> _verifyInternetAccess() async {
     try {
-      final result = await InternetAddress.lookup('google.com');
-      _isConnected.value = result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+      bool hasInternet = false;
 
-      // If we have internet but mode is offline, ask user if they want to switch
-      if (_isConnected.value && !_isOnlineMode.value) {
+      if (kIsWeb) {
+        // For web, be optimistic - assume we have internet unless proven otherwise
+        // Web apps are served over HTTP, so if the page loaded, we likely have internet
+        print('🌐 Web platform detected - checking connectivity...');
+
+        try {
+          final response = await http.head(
+            Uri.parse('https://www.google.com'),
+          ).timeout(const Duration(seconds: 3));
+          hasInternet = response.statusCode >= 200 && response.statusCode < 500;
+          print('🌐 Web connectivity check: ${response.statusCode} - $hasInternet');
+        } catch (e) {
+          print('⚠️ Web connectivity check failed: $e');
+          // On web, assume we have internet if the check fails
+          // (could be CORS, firewall, etc.)
+          hasInternet = true;
+          print('🌐 Assuming online mode for web (check failed but page is loaded)');
+        }
+      } else {
+        // For native platforms, use InternetAddress lookup
+        final result = await InternetAddress.lookup('google.com').timeout(
+          const Duration(seconds: 5),
+        );
+        hasInternet = result.isNotEmpty && result[0].rawAddress.isNotEmpty;
+        print('📱 Native connectivity check: $hasInternet');
+      }
+
+      _isConnected.value = hasInternet;
+
+      // If we have internet and mode is offline, ask user if they want to switch
+      if (_isConnected.value && !_isOnlineMode.value && !_isShowingDialog) {
         _showOnlineAvailableDialog();
+      } else if (_isConnected.value && _isOnlineMode.value) {
+        // If we have internet and already in online mode, ensure it stays online
+        print('✅ Internet available and online mode active');
+      } else if (!_isConnected.value) {
+        print('❌ No internet connection detected');
       }
     } catch (e) {
-      _isConnected.value = false;
-      _forceOfflineMode();
+      print('❌ Error verifying internet access: $e');
+
+      // On web, be lenient - don't force offline mode if check fails
+      if (kIsWeb) {
+        print('🌐 Web platform - keeping online mode despite error');
+        _isConnected.value = true;
+      } else {
+        _isConnected.value = false;
+        _forceOfflineMode();
+      }
     }
   }
 
@@ -123,6 +173,10 @@ class ConnectionService extends GetxService {
 
   /// Show dialog when internet becomes available
   void _showOnlineAvailableDialog() {
+    if (_isShowingDialog) return; // Prevent duplicate dialogs
+
+    _isShowingDialog = true;
+
     Get.dialog(
       AlertDialog(
         title: const Row(
@@ -138,14 +192,16 @@ class ConnectionService extends GetxService {
         actions: [
           TextButton(
             onPressed: () {
-              Get.back(closeOverlays: false);
+              _isShowingDialog = false;
+              Get.back();
               // Stay in offline mode
             },
             child: const Text('Stay Offline'),
           ),
           ElevatedButton(
             onPressed: () {
-              Get.back(closeOverlays: false);
+              _isShowingDialog = false;
+              Get.back();
               switchToOnlineMode();
             },
             child: const Text('Go Online'),
@@ -153,13 +209,30 @@ class ConnectionService extends GetxService {
         ],
       ),
       barrierDismissible: false,
-    );
+    ).then((_) {
+      _isShowingDialog = false; // Reset flag when dialog is dismissed
+    });
   }
 
   /// Notify about connection changes
   void _notifyConnectionChange() {
     print('Connection status: ${_isConnected.value ? 'Connected' : 'Disconnected'} (${_connectionType.value})');
     print('Mode: ${_isOnlineMode.value ? 'Online' : 'Offline'}');
+  }
+
+  /// Force online mode (bypass connection check) - useful for debugging or when connection check fails
+  void forceOnlineMode() {
+    _isOnlineMode.value = true;
+    _isConnected.value = true; // Override connection status
+    Get.snackbar(
+      '🌐 Forced Online Mode',
+      'Manually enabled online mode. Make sure you have internet connection!',
+      backgroundColor: Colors.orange.withOpacity(0.9),
+      colorText: Colors.white,
+      duration: const Duration(seconds: 3),
+      snackPosition: SnackPosition.TOP,
+    );
+    print('⚠️ FORCED online mode - bypassing connection check');
   }
 
   /// Manually switch to online mode
@@ -174,6 +247,7 @@ class ConnectionService extends GetxService {
         duration: const Duration(seconds: 2),
         snackPosition: SnackPosition.TOP,
       );
+      print('✅ Switched to online mode');
     } else {
       Get.snackbar(
         '❌ No Internet',
@@ -183,6 +257,7 @@ class ConnectionService extends GetxService {
         duration: const Duration(seconds: 2),
         snackPosition: SnackPosition.TOP,
       );
+      print('❌ Cannot switch to online mode - no internet');
     }
   }
 
@@ -216,5 +291,11 @@ class ConnectionService extends GetxService {
       'isOnlineMode': _isOnlineMode.value,
       'canSwitchToOnline': _isConnected.value && !_isOnlineMode.value,
     };
+  }
+
+  /// Force check internet connection
+  Future<void> forceCheckConnection() async {
+    print('🔄 Force checking internet connection...');
+    await _initConnectivity();
   }
 }

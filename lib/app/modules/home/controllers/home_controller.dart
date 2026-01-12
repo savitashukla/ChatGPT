@@ -46,7 +46,7 @@ class HomeController extends GetxController {
   RxBool isOfflineMLModelLoaded = false.obs;
 
   // Connection Service
-  final ConnectionService connectionService = ConnectionService();
+  late final ConnectionService connectionService;
 
   // TensorFlow Lite Model Manager
   final TFLiteModelManager _tfliteModelManager = TFLiteModelManager();
@@ -54,11 +54,24 @@ class HomeController extends GetxController {
   @override
   void onInit() {
     super.onInit();
+    // Initialize connection service properly from GetX DI
+    connectionService = Get.find<ConnectionService>();
+
+    // Force check connection immediately on init
+    Future.delayed(const Duration(milliseconds: 100), () async {
+      print('🚀 Starting connection check...');
+      await connectionService.forceCheckConnection();
+      print('🚀 Forced connection check completed on app start');
+    });
+
     //getGeminiModels();
     initSpeechState();
     checkKnowledgeBase();
     _loadOfflineMLModel();
     _showNewYearGreeting();
+
+    // Add debug logging for connection status
+    _debugConnectionStatus();
   }
 
   @override
@@ -233,25 +246,36 @@ class HomeController extends GetxController {
   Dio dio = Dio();
 
   /// this method is used to get response from Gemini api or offline ML
-
   void apiCall({required String msg}) async {
     try {
       isTyping.value = true;
       String response;
 
+      // Add debug logging
+      print('🔍 API Call Debug:');
+      print('   - Network Connected: ${connectionService.isConnected}');
+      print('   - Online Mode: ${connectionService.isOnlineMode}');
+      print('   - Message: $msg');
+
       // Check connection status and mode preference
       bool isOnline = connectionService.isOnlineMode && connectionService.isConnected;
 
+      print('   - Should use online: $isOnline');
+
       if (isOnline) {
+        print('🌐 Using online mode - calling Gemini API');
         // Online mode - use existing online functionality
         if (isRAGEnabled.value && await _ragService.hasKnowledgeBase()) {
           // Use RAG for enhanced responses
+          print('📚 Using RAG for enhanced response');
           response = await _ragService.ragQuery(msg);
         } else {
           // Fallback to normal Gemini API
+          print('🤖 Using normal Gemini API call');
           response = await _normalGeminiCall(msg);
         }
       } else {
+        print('📱 Using offline mode - local ML');
         // Offline mode - use on-device ML
         response = await _offlineMLService.generateResponse(msg);
 
@@ -262,15 +286,17 @@ class HomeController extends GetxController {
       insertNewData(response);
 
     } catch (e) {
-      print('Error in API call: $e');
+      print('❌ Error in API call: $e');
       isTyping.value = false;
 
       // If online call failed, try offline as fallback
       if (connectionService.isConnected) {
+        print('🔄 Attempting offline fallback');
         try {
           String fallbackResponse = await _offlineMLService.generateResponse(msg);
           insertNewData("🔄 **Fallback to Offline Mode**\n\n$fallbackResponse\n\n_Online service unavailable, using on-device AI._");
         } catch (offlineError) {
+          print('❌ Offline fallback also failed: $offlineError');
           insertNewData("❌ Error: Unable to get response from both online and offline services.");
         }
       } else {
@@ -281,10 +307,17 @@ class HomeController extends GetxController {
 
   /// Normal Gemini API call (fallback)
   Future<String> _normalGeminiCall(String msg) async {
+    print('🔑 Validating Gemini API key...');
+    print('🔑 API Key length: ${AppConstants.geminiApiKey.length}');
+    print('🔑 API Key (first 10 chars): ${AppConstants.geminiApiKey.length > 10 ? AppConstants.geminiApiKey.substring(0, 10) : "TOO_SHORT"}...');
+
     // Validate API key first
     if (!AppConstants.isGeminiKeyValid) {
+      print('❌ API key validation failed - key is empty or invalid');
       throw Exception('Gemini API key is missing. Please provide GEMINI_API_KEY via --dart-define');
     }
+
+    print('✅ API key valid, making request to Gemini...');
 
     dio.options.headers['content-Type'] = 'application/json';
 
@@ -300,6 +333,8 @@ class HomeController extends GetxController {
 
     final url = "${AppConstants.geminiBaseUrl}/models/${AppConstants.geminiModel}:generateContent?key=${AppConstants.geminiApiKey}";
 
+    print('🌐 Making request to: ${AppConstants.geminiBaseUrl}/models/${AppConstants.geminiModel}:generateContent');
+
     var response = await dio.post(
       url,
       data: data,
@@ -311,11 +346,28 @@ class HomeController extends GetxController {
       ),
     );
 
+    print('📨 Response status: ${response.statusCode}');
+
     // Handle common permission errors explicitly
     if (response.statusCode == 403) {
       final err = response.data is Map ? (response.data['error'] ?? {}) : {};
       final status = err['status'] ?? 'PERMISSION_DENIED';
       final message = err['message'] ?? 'Forbidden';
+
+      // Check if it's a leaked API key
+      if (message.toLowerCase().contains('leaked')) {
+        print('🚨 API KEY LEAKED! The key has been disabled by Google.');
+        throw Exception(
+          '🚨 API KEY LEAKED!\n\n'
+          'Your Gemini API key has been reported as leaked and disabled by Google.\n\n'
+          'SOLUTION:\n'
+          '1. Get a new API key: https://aistudio.google.com/app/apikey\n'
+          '2. Update .env.local file with the new key\n'
+          '3. Restart app using: ./run_web.sh\n\n'
+          'See QUICK_FIX.md for details.'
+        );
+      }
+
       throw Exception(
         '403 $status: $message. Check API key validity, billing, API enablement, key restrictions, and model access.'
       );
@@ -333,7 +385,7 @@ class HomeController extends GetxController {
     }
 
     final responseData = response.data;
-    print("call responseData here ${responseData}");
+    print("✅ Gemini API response received: ${responseData}");
     final candidates = responseData['candidates'] as List?;
 
     if (candidates != null && candidates.isNotEmpty) {
@@ -631,6 +683,21 @@ class HomeController extends GetxController {
               Text('• Internet: ${connectionInfo['isConnected'] ? '✅ Connected' : '❌ Disconnected'}'),
               Text('• Connection Type: ${connectionInfo['connectionType']}'),
               Text('• Current Mode: ${connectionInfo['isOnlineMode'] ? '🌐 Online' : '📱 Offline'}'),
+
+              const SizedBox(height: 16),
+
+              // API Key Status
+              Text('🔑 API Configuration',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              const SizedBox(height: 8),
+              Text('• Gemini Key: ${AppConstants.isGeminiKeyValid ? '✅ Configured (${AppConstants.geminiApiKey.substring(0, 10)}...)' : '❌ Missing'}'),
+              Text('• OpenAI Key: ${AppConstants.isOpenAiKeyValid ? '✅ Configured' : '❌ Missing'}'),
+              if (!AppConstants.isGeminiKeyValid)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8.0),
+                  child: Text('⚠️ No valid API key! Please restart app with:\n./run_web.sh',
+                    style: TextStyle(color: Colors.red, fontSize: 12)),
+                ),
 
               const SizedBox(height: 16),
 
@@ -932,5 +999,38 @@ class HomeController extends GetxController {
       timestamp: DateTime.now(),
     );
     messages.insert(0, newYearMessage);
+  }
+
+  /// Debug connection status for troubleshooting
+  void _debugConnectionStatus() {
+    // Print initial API key status
+    print('═══════════════════════════════════════════════════');
+    print('🔍 API CONFIGURATION DIAGNOSTICS');
+    print('═══════════════════════════════════════════════════');
+    print('🔑 Gemini API Key Status:');
+    print('   - Configured: ${AppConstants.isGeminiKeyValid ? 'YES ✅' : 'NO ❌'}');
+    print('   - Length: ${AppConstants.geminiApiKey.length} characters');
+    if (AppConstants.isGeminiKeyValid) {
+      print('   - Preview: ${AppConstants.geminiApiKey.substring(0, 10)}...');
+    } else {
+      print('   - ⚠️  API key is EMPTY! Please restart with: ./run_web.sh');
+    }
+    print('');
+    print('🔑 OpenAI API Key Status:');
+    print('   - Configured: ${AppConstants.isOpenAiKeyValid ? 'YES ✅' : 'NO ❌'}');
+    print('   - Length: ${AppConstants.openAiApiKey.length} characters');
+    print('');
+    print('🌐 Connection Status:');
+    print('   - Internet: ${connectionService.isConnected ? 'CONNECTED ✅' : 'DISCONNECTED ❌'}');
+    print('   - Mode: ${connectionService.isOnlineMode ? 'ONLINE 🌐' : 'OFFLINE 📱'}');
+    print('═══════════════════════════════════════════════════');
+
+    // Use simple polling instead of observables for release compatibility
+    Timer.periodic(const Duration(seconds: 10), (timer) {
+      print('🔄 Status Update:');
+      print('   🌐 Connection: ${connectionService.isConnected}');
+      print('   📱 Mode: ${connectionService.isOnlineMode ? 'Online' : 'Offline'}');
+      print('   🔑 Gemini Key: ${AppConstants.isGeminiKeyValid ? 'Valid' : 'Missing'}');
+    });
   }
 }

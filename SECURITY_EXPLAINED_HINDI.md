@@ -3,7 +3,7 @@
 ## ❌ पहले (असुरक्षित तरीका):
 ```dart
 // Code में API key hardcoded थी - यह DANGEROUS है!
-static String apiKey = "AIzaSyBFbWsr1AK4TAelWGSAqCKsXFctJqN2lpA";
+static String apiKey = "AIzaSyAjpojPBLDGvIbONJ1yjJFckSMwmZUZl6U";
 ```
 
 **समस्याएं:**
@@ -16,7 +16,7 @@ static String apiKey = "AIzaSyBFbWsr1AK4TAelWGSAqCKsXFctJqN2lpA";
 ### 1. Environment Variables का Use
 ```bash
 # .env.local file में keys store करते हैं (git में नहीं जाती)
-GEMINI_API_KEY=AIzaSyBFbWsr1AK4TAelWGSAqCKsXFctJqN2lpA
+GEMINI_API_KEY=AIzaSyAjpojPBLDGvIbONJ1yjJFckSMwmZUZl6U
 OPENAI_API_KEY=sk-your-openai-key-here
 ```
 
